@@ -10,9 +10,9 @@ use windows::{
 };
 
 struct WindowState {
-    width: u32,
-    height: u32,
+    handle: HWND,
     closed: bool,
+    // Points in coords from 0.0 to 1.0
     points: Vec<WindowPoint>,
 }
 
@@ -25,6 +25,13 @@ impl WindowPoint {
     fn new(x: f32, y: f32) -> WindowPoint {
         WindowPoint { x, y }
     }
+
+    // Windows and Opengl have different coordinate systems
+    fn to_opengl(self: &WindowPoint) -> WindowPoint {
+        let x = 2.0 * (self.x - 0.5);
+        let y = 2.0 * (0.5 - self.y);
+        return WindowPoint::new(x, y);
+    }
 }
 
 fn main() {
@@ -33,13 +40,12 @@ fn main() {
 
     let window_name = "MyWindow";
     let mut state = WindowState {
+        handle: HWND(0),
         closed: false,
         points: vec![],
-        height: 600,
-        width: 800,
     };
     let windows_handle = create_window(window_name, class_name, &state);
-    update_client_rect(&mut state, windows_handle);
+    state.handle = windows_handle;
 
     set_opengl_pixel_format(windows_handle).unwrap();
     start_opengl_rendering_context(windows_handle).unwrap();
@@ -47,7 +53,7 @@ fn main() {
     let dc = unsafe { GetDC(windows_handle) };
     while !state.closed {
         process_messages(&mut state);
-        
+
         opengl_paint(&state);
 
         unsafe { SwapBuffers(dc).unwrap() };
@@ -56,6 +62,8 @@ fn main() {
 }
 
 fn opengl_paint(state: &WindowState) {
+    let size = get_window_size(state.handle);
+    unsafe { glViewport(0, 0, size.width, size.height) };
     unsafe { glClear(GL_COLOR_BUFFER_BIT) };
     unsafe { glClearColor(1.0, 1.0, 0.0, 1.0) };
 
@@ -64,25 +72,24 @@ fn opengl_paint(state: &WindowState) {
             glPointSize(10.0);
             glBegin(GL_POINTS);
             glColor3f(0.0, 0.0, 0.0);
-            let point = window_to_opengl(&state, point);
+            let point = point.to_opengl();
             glVertex2f(point.x, point.y);
             glEnd();
         }
     }
 }
 
-fn update_client_rect(state: &mut WindowState, windows_handle: HWND) {
-    let mut lprect = RECT::default();
-    unsafe { GetClientRect(windows_handle, &mut lprect).unwrap() };
-    state.width = lprect.right as u32 - lprect.left as u32;
-    state.height = lprect.bottom as u32 - lprect.top as u32;
+struct WindowSize {
+    width: i32,
+    height: i32,
 }
 
-// Windows and Opengl have different coordinate systems
-fn window_to_opengl(state: &WindowState, point: &WindowPoint) -> WindowPoint {
-    let x = 2.0 * (point.x / state.width as f32 - 0.5);
-    let y = 2.0 * (0.5 - point.y / state.height as f32);
-    return WindowPoint::new(x, y);
+fn get_window_size(window_handle: HWND) -> WindowSize {
+    let mut lprect = RECT::default();
+    unsafe { GetClientRect(window_handle, &mut lprect).unwrap() };
+    let width = lprect.right - lprect.left;
+    let height = lprect.bottom - lprect.top;
+    return WindowSize { width, height };
 }
 
 fn process_messages(state: &mut WindowState) {
@@ -92,13 +99,13 @@ fn process_messages(state: &mut WindowState) {
             TranslateMessage(&msg);
 
             if msg.message == WM_LBUTTONDOWN {
+                let size = get_window_size(msg.hwnd);
+
                 ScreenToClient(msg.hwnd, &mut msg.pt);
-                let x = msg.pt.x;
-                let y = msg.pt.y;
+                let x = msg.pt.x as f32 / size.width as f32;
+                let y = msg.pt.y as f32 / size.height as f32;
                 println!("Mouse click at ({x}, {y})");
-                state
-                    .points
-                    .push(WindowPoint::new(msg.pt.x as f32, msg.pt.y as f32));
+                state.points.push(WindowPoint::new(x, y));
                 continue;
             }
 
@@ -154,13 +161,13 @@ fn set_opengl_pixel_format(windows_handle: HWND) -> Result<(), Box<dyn Error>> {
 }
 
 fn create_window(window_name: &str, class_name: &str, state: &WindowState) -> HWND {
-    let width = state.width;
-    let height = state.height;
+    let width = 800;
+    let height = 600;
 
     let x = 0;
     let y = 0;
 
-    let styles = (WS_OVERLAPPEDWINDOW | WS_VISIBLE) & !WS_THICKFRAME & !WS_MAXIMIZEBOX;
+    let styles = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
     let ex_styles = 0;
 
     let window_name = HSTRING::from(window_name);
@@ -189,6 +196,7 @@ fn create_window(window_name: &str, class_name: &str, state: &WindowState) -> HW
 
 fn create_win_class(class_name: &str) {
     let class_name = HSTRING::from(class_name);
+    let cursor = unsafe { LoadCursorW(HINSTANCE(0), IDC_ARROW).unwrap() };
     let class = WNDCLASSW {
         style: WNDCLASS_STYLES(0),
         lpfnWndProc: Some(winproc),
@@ -196,7 +204,7 @@ fn create_win_class(class_name: &str) {
         cbWndExtra: 0,
         hInstance: HINSTANCE(0),
         hIcon: HICON(0),
-        hCursor: HCURSOR(0),
+        hCursor: cursor,
         hbrBackground: HBRUSH(0),
         lpszMenuName: PCWSTR::null(),
         lpszClassName: PCWSTR::from_raw(class_name.as_ptr()),
